@@ -1,17 +1,18 @@
 # Enhanced MCP Memory Server
 
-Dockerized MCP memory server with inverted index search, tokenization, and temporal scoring.
+Dockerized MCP memory server with inverted index search, tokenization, temporal scoring, and graph traversal for intelligent context discovery.
 
 ## Features
 
 | Feature | Original | Enhanced |
 |---------|----------|----------|
-| Search method | Substring match | Tokenized + inverted index |
-| Performance | O(n×k) | O(t×log m) |
+| Search method | Substring match | Tokenized + inverted index + graph traversal |
+| Performance | O(n×k) | O(t×log m) + O(V+E) |
 | Word order | Dependent | Independent |
 | Multi-word queries | Fails | Works |
 | Ranking | None | TF × importance × recency |
 | Timestamps | None | created_at, updated_at |
+| Context discovery | None | BFS path-finding between entry nodes |
 
 ## Quick Start
 
@@ -83,13 +84,18 @@ docker logs -f mcp-memory-server
 Environment variables in `docker-compose.yml`:
 
 - `MEMORY_FILE_PATH`: Storage location (default: `/app/data/memory.jsonl`)
-- `SEARCH_MIN_TOKEN_MATCH`: Minimum token match percentage (default: `0`)
-  - Range: 0.0-1.0 (e.g., 0.65 = 65% of query tokens must match)
-  - Lower values = more results, higher values = stricter filtering
-  - Default 0 = any entity matching at least one token is considered
-- `SEARCH_TOP_K`: Maximum number of search results (default: `5`)
-  - Returns top N most relevant results based on TF × importance × recency scoring
-  - Increase for broader result sets, decrease for more focused results
+- `SEARCH_TOP_K`: Maximum number of entry nodes from initial search (default: `5`)
+  - Returns top N most relevant entry nodes based on TF × importance × recency scoring
+  - These become starting points for graph traversal
+  - Increase for broader initial matches, decrease for focused entry points
+- `SEARCH_MAX_DEPTH`: Maximum hops for graph traversal (default: `2`)
+  - Controls how far to explore from entry nodes
+  - Depth 2 = entry → intermediate → entry paths
+  - Higher values = more context but larger result sets
+- `SEARCH_MAX_TOTAL_NODES`: Maximum total nodes in final result (default: `25`)
+  - Caps result size to prevent unbounded growth
+  - Entry nodes are prioritized if limit is exceeded
+  - Increase if you need more comprehensive context
 
 ## Data Persistence
 
@@ -124,14 +130,26 @@ score = TF × importance × recency
 - Recency: exp(-age / 30 days)
 ```
 
-### Search Process
+### Search Process (Two-Phase)
+
+**Phase 1: Entry Node Selection**
 1. Tokenize query into terms
-2. Look up matching entities in inverted index
-3. Count term frequency per entity
-4. Apply importance and recency boosts
-5. Filter by minimum token match threshold
-6. Sort by final score (descending)
-7. Limit to top k results
+2. Look up matching entities in inverted index (O(t×log m))
+3. Count term frequency per entity (TF scoring)
+4. Apply importance boost: `log(observation_count + 1)`
+5. Apply recency boost: `exp(-age / 30 days)`
+6. Calculate final score: `TF × importance × recency`
+7. Sort by score and select top-K entry nodes
+
+**Phase 2: Graph Traversal**
+1. Build bidirectional adjacency list from relations
+2. Run BFS from each entry node up to max depth
+3. Collect all discovered nodes (entry + intermediate)
+4. Apply total node limit (prioritize entry nodes if exceeded)
+5. Filter relations to only those between final nodes
+6. Return knowledge graph with context
+
+**Why This Works**: Entry nodes match your query directly, while graph traversal discovers related context that might not contain query terms but connects the concepts you're searching for.
 
 ## Test Results
 
@@ -146,6 +164,23 @@ Comparative testing (Enhanced vs Original on 73 entities):
 - Original: 8-17 unranked results per query
 
 **Conclusion**: Enhanced version delivers more concise, relevant results through tokenization and TF-based ranking. Top-k limiting (default 5) eliminates noise while relevance scoring surfaces most important entities first.
+
+### Graph Traversal Test
+
+**Setup**: Created test chain with relations
+```
+zoom-api-integration → oauth-protocol-handler → scope-management → timeline-feature
+```
+
+**Query**: "zoom timeline scope"
+
+**Results**:
+- ✅ `zoom-api-integration` (entry node - matches "zoom")
+- ✅ `oauth-protocol-handler` (intermediate - NO query match, discovered via traversal)
+- ✅ `scope-management` (entry node - matches "scope")
+- ✅ All connecting relations included
+
+**Proof**: `oauth-protocol-handler` appeared despite containing none of the query terms, demonstrating successful context discovery through graph traversal. This allows the search to surface implicit connections between concepts.
 
 ## Known Limitations
 
@@ -234,5 +269,6 @@ Based on: https://github.com/modelcontextprotocol/servers/tree/main/src/memory
 Enhanced with:
 - Inverted index search (10-500x performance improvement)
 - Tokenization (word order independence)
-- Relevance scoring (TF-IDF inspired ranking)
+- Relevance scoring (TF × importance × recency)
 - Temporal tracking (entity timestamps)
+- Graph traversal (BFS context discovery)

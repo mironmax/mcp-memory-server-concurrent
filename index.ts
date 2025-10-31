@@ -13,13 +13,17 @@ import { fileURLToPath } from 'url';
 // Define memory file path using environment variable with fallback
 const defaultMemoryPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'memory.jsonl');
 
-// Search relevance threshold: minimum percentage of query tokens that must match (0.0-1.0)
-// Default 0 means any entity matching at least one token is considered (rely on top-k + scoring)
-const SEARCH_MIN_TOKEN_MATCH = parseFloat(process.env.SEARCH_MIN_TOKEN_MATCH || '0');
-
-// Maximum number of results to return from search (top-k limit)
-// Default 5 returns the 5 most relevant results based on TF × importance × recency ranking
+// Maximum number of entry nodes to select from initial search (top-k limit)
+// Default 5 returns the 5 most relevant entry nodes based on TF × importance × recency ranking
 const SEARCH_TOP_K = parseInt(process.env.SEARCH_TOP_K || '5', 10);
+
+// Maximum depth for graph traversal between entry nodes (number of hops)
+// Default 2 allows paths up to 2 relations deep (entry -> intermediate -> entry)
+const SEARCH_MAX_DEPTH = parseInt(process.env.SEARCH_MAX_DEPTH || '2', 10);
+
+// Maximum total nodes to return in final result (prevents unbounded growth)
+// Default 25 caps the result size even if traversal finds more nodes
+const SEARCH_MAX_TOTAL_NODES = parseInt(process.env.SEARCH_MAX_TOTAL_NODES || '25', 10);
 
 // Handle backward compatibility: migrate memory.json to memory.jsonl if needed
 async function ensureMemoryFilePath(): Promise<string> {
@@ -270,6 +274,55 @@ class KnowledgeGraphManager {
     return this.loadGraph();
   }
 
+  // BFS path-finding between entry nodes (bidirectional, depth-limited)
+  private findConnectingNodes(
+    entryNodes: Set<string>,
+    graph: KnowledgeGraph,
+    maxDepth: number
+  ): Set<string> {
+    // Build adjacency list for bidirectional traversal
+    const adjacency = new Map<string, Set<string>>();
+
+    graph.relations.forEach(rel => {
+      // Forward direction
+      if (!adjacency.has(rel.from)) adjacency.set(rel.from, new Set());
+      adjacency.get(rel.from)!.add(rel.to);
+
+      // Backward direction (treat relations as undirected)
+      if (!adjacency.has(rel.to)) adjacency.set(rel.to, new Set());
+      adjacency.get(rel.to)!.add(rel.from);
+    });
+
+    const connectedNodes = new Set<string>(entryNodes);
+
+    // BFS from each entry node up to maxDepth
+    entryNodes.forEach(startNode => {
+      const queue: Array<{ node: string; depth: number }> = [{ node: startNode, depth: 0 }];
+      const visited = new Set<string>([startNode]);
+
+      while (queue.length > 0) {
+        const { node, depth } = queue.shift()!;
+
+        // Stop if we've reached max depth
+        if (depth >= maxDepth) continue;
+
+        // Explore neighbors
+        const neighbors = adjacency.get(node);
+        if (!neighbors) continue;
+
+        neighbors.forEach(neighbor => {
+          if (!visited.has(neighbor)) {
+            visited.add(neighbor);
+            connectedNodes.add(neighbor);
+            queue.push({ node: neighbor, depth: depth + 1 });
+          }
+        });
+      }
+    });
+
+    return connectedNodes;
+  }
+
   // Sparse vector search using inverted index (BM25-style with importance and recency scoring)
   async searchNodes(query: string): Promise<KnowledgeGraph> {
     const graph = await this.loadGraph();
@@ -283,7 +336,7 @@ class KnowledgeGraphManager {
     }
 
     // Find entities matching query tokens using inverted index
-    // Score entities by number of matching tokens (simple TF approach)
+    // Score entities by number of matching tokens (TF approach)
     const entityScores = new Map<string, number>();
 
     queryTokens.forEach(token => {
@@ -295,16 +348,7 @@ class KnowledgeGraphManager {
       }
     });
 
-    // Filter entities by minimum token match threshold
-    // Example: 4 query tokens × 0.65 = 2.6 → ceil(2.6) = 3 tokens required
-    const minTokenThreshold = Math.ceil(queryTokens.length * SEARCH_MIN_TOKEN_MATCH);
-    for (const [entityName, tfScore] of entityScores.entries()) {
-      if (tfScore < minTokenThreshold) {
-        entityScores.delete(entityName);
-      }
-    }
-
-    // If no entities meet threshold, return empty graph
+    // If no entities match any token, return empty graph
     if (entityScores.size === 0) {
       return { entities: [], relations: [] };
     }
@@ -334,31 +378,50 @@ class KnowledgeGraphManager {
       entityScores.set(entityName, finalScore);
     });
 
-    // Get entities sorted by final relevance score and limited to top k
-    const rankedEntityNames = Array.from(entityScores.entries())
+    // Get top-K entry nodes sorted by final relevance score
+    const entryNodeNames = Array.from(entityScores.entries())
       .sort((a, b) => b[1] - a[1]) // Sort by score descending
-      .slice(0, SEARCH_TOP_K)      // Limit to top k results
+      .slice(0, SEARCH_TOP_K)      // Limit to top k entry nodes
       .map(([name]) => name);
 
+    // Phase 2: Graph traversal to find connecting nodes
+    const entryNodesSet = new Set(entryNodeNames);
+    const allConnectedNodes = this.findConnectingNodes(entryNodesSet, graph, SEARCH_MAX_DEPTH);
+
+    // Apply total node limit
+    let finalNodeNames: string[];
+    if (allConnectedNodes.size <= SEARCH_MAX_TOTAL_NODES) {
+      // All nodes fit within limit
+      finalNodeNames = Array.from(allConnectedNodes);
+    } else {
+      // Prioritize entry nodes, then add intermediate nodes up to limit
+      finalNodeNames = [...entryNodeNames];
+      const intermediateNodes = Array.from(allConnectedNodes).filter(
+        name => !entryNodesSet.has(name)
+      );
+      const remainingSlots = SEARCH_MAX_TOTAL_NODES - entryNodeNames.length;
+      finalNodeNames.push(...intermediateNodes.slice(0, remainingSlots));
+    }
+
     // Retrieve entity objects using hash index (O(1) per entity)
-    const filteredEntities = rankedEntityNames
+    const finalEntities = finalNodeNames
       .map(name => this.entityIndex.get(name))
       .filter((e): e is Entity => e !== undefined);
 
-    // Create a Set of filtered entity names for quick lookup
-    const filteredEntityNames = new Set(rankedEntityNames);
+    // Create a Set of final entity names for quick lookup
+    const finalEntityNamesSet = new Set(finalNodeNames);
 
-    // Filter relations to only include those between filtered entities
-    const filteredRelations = graph.relations.filter(r =>
-      filteredEntityNames.has(r.from) && filteredEntityNames.has(r.to)
+    // Filter relations to only include those between final entities
+    const finalRelations = graph.relations.filter(r =>
+      finalEntityNamesSet.has(r.from) && finalEntityNamesSet.has(r.to)
     );
 
-    const filteredGraph: KnowledgeGraph = {
-      entities: filteredEntities,
-      relations: filteredRelations,
+    const resultGraph: KnowledgeGraph = {
+      entities: finalEntities,
+      relations: finalRelations,
     };
 
-    return filteredGraph;
+    return resultGraph;
   }
 
   async openNodes(names: string[]): Promise<KnowledgeGraph> {

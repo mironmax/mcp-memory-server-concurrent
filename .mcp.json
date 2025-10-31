@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "memory-original": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ],
+      "env": {
+        "MEMORY_FILE_PATH": "/home/maxim/DevProj/mcp-memory-server/data/memory.jsonl"
+      }
+    }
+  }
+}

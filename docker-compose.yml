@@ -1,0 +1,19 @@
+services:
+  mcp-memory-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-memory-server
+    volumes:
+      - ./data:/app/data
+    environment:
+      - MEMORY_FILE_PATH=/app/data/memory.jsonl
+      - SEARCH_MIN_TOKEN_MATCH=0
+      - SEARCH_TOP_K=5
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+networks:
+  mcp-network:
+    driver: bridge

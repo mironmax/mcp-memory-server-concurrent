@@ -5,7 +5,9 @@ services:
       dockerfile: Dockerfile
     container_name: mcp-memory-server
     volumes:
-      - ./data:/app/data
+      - ${DATA_DIR:-./data}:/app/data
+    environment:
+      - MEMORY_FILE_PATH=/app/data/memory.jsonl
     env_file:
       - .env
     stdin_open: true

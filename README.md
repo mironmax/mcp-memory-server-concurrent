@@ -38,14 +38,13 @@ Update `~/.claude.json`:
     "memory": {
       "type": "stdio",
       "command": "docker",
-      "args": ["exec", "-i", "mcp-memory-server", "node", "dist/index.js"],
-      "env": {
-        "MEMORY_FILE_PATH": "/app/data/memory.jsonl"
-      }
+      "args": ["exec", "-i", "mcp-memory-server", "node", "dist/index.js"]
     }
   }
 }
 ```
+
+**Note:** The `MEMORY_FILE_PATH` is automatically set to `/app/data/memory.jsonl` inside the container. To change where data is stored on your **host**, modify `DATA_DIR` in the `.env` file.
 
 **After updating, restart Claude Code.**
 
@@ -84,7 +83,9 @@ docker logs -f mcp-memory-server
 
 Environment variables in `.env` file:
 
-- `MEMORY_FILE_PATH`: Storage location (default: `/app/data/memory.jsonl`)
+- `DATA_DIR`: Host directory to mount for persistent storage (default: `./data`)
+  - This directory on your host will be mapped to `/app/data` in the container
+  - The `memory.jsonl` file will be stored here
 - `SEARCH_TOP_PER_TOKEN`: Number of entities to select per query term (default: `1`)
   - Ensures semantic diversity - each concept in your query gets representation
   - Higher values = more entities per concept, more comprehensive results

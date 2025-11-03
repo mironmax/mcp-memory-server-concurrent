@@ -1,0 +1,18 @@
+# Environment variables
+.env
+
+# Data directory (contains memory.jsonl)
+data/
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

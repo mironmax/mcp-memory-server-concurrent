@@ -1,18 +1,19 @@
 # Enhanced MCP Memory Server
 
-Dockerized MCP memory server with inverted index search, tokenization, temporal scoring, and graph traversal for intelligent context discovery.
+Dockerized MCP memory server with inverted index search, per-token semantic matching, sublinear TF scoring, and Steiner Tree path-finding for intelligent context discovery.
 
 ## Features
 
 | Feature | Original | Enhanced |
 |---------|----------|----------|
-| Search method | Substring match | Tokenized + inverted index + graph traversal |
+| Search method | Substring match | Per-token selection + Steiner Tree |
 | Performance | O(n×k) | O(t×log m) + O(V+E) |
 | Word order | Dependent | Independent |
 | Multi-word queries | Fails | Works |
-| Ranking | None | TF × importance × recency |
+| Ranking | None | Sublinear TF × importance × recency |
+| Semantic diversity | No | Per-token entry selection |
 | Timestamps | None | created_at, updated_at |
-| Context discovery | None | BFS path-finding between entry nodes |
+| Context discovery | None | Shortest paths between concepts |
 
 ## Quick Start
 
@@ -81,21 +82,27 @@ docker logs -f mcp-memory-server
 
 ## Configuration
 
-Environment variables in `docker-compose.yml`:
+Environment variables in `.env` file:
 
 - `MEMORY_FILE_PATH`: Storage location (default: `/app/data/memory.jsonl`)
-- `SEARCH_TOP_K`: Maximum number of entry nodes from initial search (default: `5`)
-  - Returns top N most relevant entry nodes based on TF × importance × recency scoring
-  - These become starting points for graph traversal
-  - Increase for broader initial matches, decrease for focused entry points
-- `SEARCH_MAX_DEPTH`: Maximum hops for graph traversal (default: `2`)
-  - Controls how far to explore from entry nodes
-  - Depth 2 = entry → intermediate → entry paths
-  - Higher values = more context but larger result sets
-- `SEARCH_MAX_TOTAL_NODES`: Maximum total nodes in final result (default: `25`)
-  - Caps result size to prevent unbounded growth
-  - Entry nodes are prioritized if limit is exceeded
-  - Increase if you need more comprehensive context
+- `SEARCH_TOP_PER_TOKEN`: Number of entities to select per query term (default: `1`)
+  - Ensures semantic diversity - each concept in your query gets representation
+  - Higher values = more entities per concept, more comprehensive results
+  - Range: 1-5 recommended
+- `SEARCH_MIN_RELATIVE_SCORE`: Minimum relative score threshold, 0.0-1.0 (default: `0.3`)
+  - Filters weak matches - entities must score ≥ X% of the best match per token
+  - 0.3 = keep entities scoring ≥30% of top match
+  - Higher = stricter filtering, lower = more diverse matches
+- `SEARCH_MAX_PATH_LENGTH`: Maximum path length in hops (default: `5`)
+  - Controls connection depth when finding paths between entry nodes
+  - Higher = longer chains, more intermediate nodes
+  - Range: 1-10 recommended
+- `SEARCH_MAX_TOTAL_NODES`: Maximum total nodes in final result (default: `50`)
+  - Safety cap to prevent unbounded growth
+  - Entry nodes prioritized if limit exceeded
+  - Range: 10-100 recommended
+
+See `example.env` for detailed explanations.
 
 ## Data Persistence
 
@@ -124,32 +131,36 @@ Maps terms to entities: `{docker: [entity1, entity2], mcp: [entity1, entity3]}`
 
 ### Relevance Scoring
 ```
-score = TF × importance × recency
-- TF: Term frequency in entity
-- Importance: log(observation count + 1)
-- Recency: exp(-age / 30 days)
+TF (sublinear): 1 + log(1 + frequency)
+Importance: log(observations + 1) × (1 + log(1 + degree))
+Recency: linear decay over 30 days
+Final score = TF × Importance × Recency
 ```
+
+**Scoring rationale:**
+- Sublinear TF prevents dominance by entities with many mentions
+- Importance combines content richness (observations) and connectedness (degree)
+- Recency gives recent entities a boost without overwhelming other factors
 
 ### Search Process (Two-Phase)
 
-**Phase 1: Entry Node Selection**
-1. Tokenize query into terms
-2. Look up matching entities in inverted index (O(t×log m))
-3. Count term frequency per entity (TF scoring)
-4. Apply importance boost: `log(observation_count + 1)`
-5. Apply recency boost: `exp(-age / 30 days)`
-6. Calculate final score: `TF × importance × recency`
-7. Sort by score and select top-K entry nodes
+**Phase 1: Per-Token Entry Selection**
+1. Tokenize query into terms (e.g., "zoom oauth timeline" → [zoom, oauth, timeline])
+2. For each token, find matching entities via inverted index O(t×log m)
+3. Score each entity: `TF × importance × recency`
+4. Apply relative threshold: keep entities scoring ≥ X% of best match per token
+5. Select top-N entities per token (deduplicated across tokens)
+6. Result: diverse entry nodes representing each semantic concept
 
-**Phase 2: Graph Traversal**
-1. Build bidirectional adjacency list from relations
-2. Run BFS from each entry node up to max depth
-3. Collect all discovered nodes (entry + intermediate)
+**Phase 2: Steiner Tree Approximation**
+1. Find shortest paths between all pairs of entry nodes (BFS, max path length)
+2. Union all paths to form minimal connecting subgraph (2-approximation)
+3. Include only nodes on connection paths (not full neighborhoods)
 4. Apply total node limit (prioritize entry nodes if exceeded)
 5. Filter relations to only those between final nodes
-6. Return knowledge graph with context
+6. Return knowledge graph with connecting context
 
-**Why This Works**: Entry nodes match your query directly, while graph traversal discovers related context that might not contain query terms but connects the concepts you're searching for.
+**Why This Works**: Per-token selection ensures each query concept is represented. Steiner Tree finds minimal paths connecting these concepts, surfacing relevant intermediate context without neighborhood explosion.
 
 ## Test Results
 
@@ -269,6 +280,9 @@ Based on: https://github.com/modelcontextprotocol/servers/tree/main/src/memory
 Enhanced with:
 - Inverted index search (10-500x performance improvement)
 - Tokenization (word order independence)
-- Relevance scoring (TF × importance × recency)
+- Per-token semantic matching (ensures diversity)
+- Sublinear TF scoring (prevents super-entity dominance)
+- Connectedness ranking (graph degree in importance)
+- Relative score thresholding (adaptive filtering)
 - Temporal tracking (entity timestamps)
-- Graph traversal (BFS context discovery)
+- Steiner Tree path-finding (minimal connecting subgraph)

@@ -1,0 +1,12 @@
+[Unit]
+Description=MCP Memory Server Daily Backup Timer
+Requires=mcp-memory-backup.service
+
+[Timer]
+OnCalendar=daily
+OnCalendar=03:00
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target

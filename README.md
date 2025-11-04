@@ -172,14 +172,37 @@ This allows multiple agents to safely create entities, relations, and observatio
 
 ### Backup
 
-```bash
-# Backup
-cp data/memory.jsonl data/memory.jsonl.backup
+The repository includes an intelligent backup rotation script with grandfather-father-son strategy:
 
-# Restore
-cp data/memory.jsonl.backup data/memory.jsonl
-docker compose restart
+```bash
+# Manual backup with automatic rotation
+./backup-memory.sh backup
+
+# Check backup status
+./backup-memory.sh status
+
+# List all backups
+./backup-memory.sh list
+
+# Restore from backup
+./backup-memory.sh restore data/backups/daily/memory_YYYYMMDD_HHMMSS.jsonl.gz
 ```
+
+**Backup Retention:**
+- Daily: 7 days
+- Weekly: 4 weeks (promoted from 7-day-old daily)
+- Monthly: 12 months (promoted from 4-week-old weekly)
+- Yearly: Forever (promoted from 12-month-old monthly)
+
+**Setup automatic daily backups** (runs at 3 AM):
+
+```bash
+sudo cp mcp-memory-backup.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now mcp-memory-backup.timer
+```
+
+See [BACKUP.md](BACKUP.md) for complete backup documentation.
 
 ## How It Works
 

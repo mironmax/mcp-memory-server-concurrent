@@ -2,10 +2,11 @@
 .env
 .env.local
 
-# Data directory (contains memory.jsonl)
+# Data directory (contains memory.jsonl and backups)
 # Ignore everything in data/ except README
 data/*
 !data/README.md
+!data/.gitkeep
 
 # Lock files
 *.lock

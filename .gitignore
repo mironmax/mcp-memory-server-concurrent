@@ -3,9 +3,10 @@
 .env.local
 
 # Data directory (contains memory.jsonl)
-data/
-*.jsonl
-*.jsonl.backup
+data/*.jsonl
+data/*.jsonl.backup
+data/*.lock
+data/*.tmp
 
 # Lock files
 *.lock

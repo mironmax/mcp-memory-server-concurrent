@@ -3,10 +3,9 @@
 .env.local
 
 # Data directory (contains memory.jsonl)
-data/*.jsonl
-data/*.jsonl.backup
-data/*.lock
-data/*.tmp
+# Ignore everything in data/ except README
+data/*
+!data/README.md
 
 # Lock files
 *.lock

@@ -170,39 +170,9 @@ This allows multiple agents to safely create entities, relations, and observatio
 - **Storage file**: `./data/memory.jsonl`
 - **Format**: JSONL (JSON Lines) - one object per line
 
-### Backup
+**Backup**: Intelligent rotation system with grandfather-father-son strategy (7 daily → 4 weekly → 12 monthly → yearly forever)
 
-The repository includes an intelligent backup rotation script with grandfather-father-son strategy:
-
-```bash
-# Manual backup with automatic rotation
-./backup-memory.sh backup
-
-# Check backup status
-./backup-memory.sh status
-
-# List all backups
-./backup-memory.sh list
-
-# Restore from backup
-./backup-memory.sh restore data/backups/daily/memory_YYYYMMDD_HHMMSS.jsonl.gz
-```
-
-**Backup Retention:**
-- Daily: 7 days
-- Weekly: 4 weeks (promoted from 7-day-old daily)
-- Monthly: 12 months (promoted from 4-week-old weekly)
-- Yearly: Forever (promoted from 12-month-old monthly)
-
-**Setup automatic daily backups** (runs at 3 AM):
-
-```bash
-sudo cp mcp-memory-backup.{service,timer} /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now mcp-memory-backup.timer
-```
-
-See [BACKUP.md](BACKUP.md) for complete backup documentation.
+See [data/README.md](data/README.md) for data management and [BACKUP.md](BACKUP.md) for complete backup documentation.
 
 ## How It Works
 

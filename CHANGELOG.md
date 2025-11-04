@@ -1,45 +1,68 @@
 # Changelog
 
-All notable changes to the Enhanced MCP Memory Server.
+All notable changes to the MCP Memory Server - Concurrent Edition.
 
-## [1.0.0] - 2025-10-23
+## [1.0.0] - 2025-11-03
 
-### Added
+### Added - Concurrent Access Support
+- **File locking**: Cooperative locking via `proper-lockfile` library
+- **withFileLock() wrapper**: All mutation operations protected
+- **Atomic writes**: Temp file + rename pattern prevents partial writes
+- **Retry logic**: 5 attempts with exponential backoff (100ms-2s)
+- **Stale lock detection**: 10s timeout with liveness updates every 5s
+- **Lock-free reads**: Read operations don't acquire locks (eventual consistency)
+
+### Added - Advanced Search Features
 - **Inverted index search**: O(t×log m) performance vs O(n×k) linear scan
-- **Tokenized search**: Splits queries into words, matches independently
+- **Per-token selection**: Each query term gets top-N entity matches
+- **Steiner Tree path-finding**: Discovers connecting context between concepts
 - **Relevance scoring**: TF × importance × recency ranking
 - **Temporal tracking**: Entity-level `created_at` and `updated_at` timestamps
-- **Docker containerization**: Isolated deployment with volume persistence
-- **Configurable search threshold**: `SEARCH_MIN_TOKEN_MATCH` environment variable (default: 0.65)
+- **Configurable parameters**: SEARCH_TOP_PER_TOKEN, SEARCH_MIN_RELATIVE_SCORE, SEARCH_MAX_PATH_LENGTH, SEARCH_MAX_TOTAL_NODES
 
 ### Enhanced
-- **Search quality**: Word order independence, multi-word queries, partial matching
+- **Search quality**: Word order independence, multi-word queries, context discovery
 - **Performance**: ~10-500x faster search with inverted index
-- **Data persistence**: JSONL format with explicit volume mount to `./data/memory.jsonl`
+- **Data persistence**: JSONL format with volume mount to `./data/memory.jsonl`
 - **Multi-field search**: Searches across entity name, type, and observations
+- **Concurrent safety**: Multiple agents can safely access memory simultaneously
 
-### Migration
-- Migrated from NPX-based deployment to Docker container
-- Data migrated from `~/.claude/memory.jsonl` (57KB, 180 entities)
-- Updated Claude Code configuration to use Docker exec transport
+### Changed
+- **Package name**: `mcp-memory-server-concurrent` (independent package)
+- **Version**: Reset to 1.0.0 (no backward compatibility with original)
+- **Server name**: `mcp-memory-server-concurrent`
+- **Docker deployment**: Isolated container with persistent storage
+
+### Removed
+- **Backward compatibility**: No memory.json migration (JSONL only)
+- **Original package references**: Severed from @modelcontextprotocol/server-memory-modified
 
 ### Testing
-- **Completed**: All 8 post-deployment tests passed
-- **Verified**: Search enhancement, data migration, word order independence, partial matching, multi-field search, relevance ranking, performance (<1s), write operations with timestamps
+- **Concurrent operations**: 2 parallel subagents tested successfully
+- **Verified**: 5 entities created, 1 relation, no race conditions
+- **Lock performance**: <5ms acquisition time (uncontended)
+- **Search verified**: Per-token selection and path-finding working correctly
 
 ### Known Limitations
-- **Hyphenated compounds**: "docker-compose" won't match "docker" query (fixable)
-- **Synonyms**: "container" won't find "docker" (requires synonym expansion)
-- **Word variants**: "containerization" won't match "containerize" (requires stemming)
+- **Hyphenated compounds**: "docker-compose" won't match "docker"
+- **Synonyms**: "container" won't find "docker"
+- **Word variants**: "containerization" won't match "containerize"
 
-### Breaking Changes
-- Configuration change required in `~/.claude.json`:
-  - Old: `npx -y @modelcontextprotocol/server-memory`
-  - New: `docker exec -i mcp-memory-server node dist/index.js`
-- Data location changed:
-  - Old: `~/.claude/memory.jsonl`
-  - New: `~/DevProj/mcp-memory-server/data/memory.jsonl`
+### Technical Details
+- **Code growth**: +60 lines net (594 → 654 lines)
+- **Dependencies added**: `proper-lockfile` v4.1.2, `@types/proper-lockfile` v4.1.4
+- **Protected operations**: createEntities, createRelations, addObservations, deleteEntities, deleteObservations, deleteRelations
+- **Lock strategy**: Exclusive write lock, lock-free reads
 
-### Credits
-Based on: https://github.com/modelcontextprotocol/servers/tree/main/src/memory
-Enhanced with inverted index search, tokenization, and temporal scoring.
+## Credits
+
+Based on the original MCP memory server by Anthropic.
+
+Enhanced with:
+- Concurrent access support via file locking
+- Inverted index search
+- Per-token semantic matching
+- Steiner Tree path-finding
+- Sublinear TF scoring
+- Temporal tracking
+- Atomic write patterns

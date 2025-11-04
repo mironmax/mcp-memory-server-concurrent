@@ -9,9 +9,7 @@ import {
 import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-
-// Define memory file path using environment variable with fallback
-const defaultMemoryPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'memory.jsonl');
+import lockfile from 'proper-lockfile';
 
 // Number of top matching entities to select per query token
 // Default 1 ensures each concept in the query is represented by its best match
@@ -29,49 +27,20 @@ const SEARCH_MAX_PATH_LENGTH = parseInt(process.env.SEARCH_MAX_PATH_LENGTH || '5
 // Default 50 provides comprehensive context without overwhelming token budget
 const SEARCH_MAX_TOTAL_NODES = parseInt(process.env.SEARCH_MAX_TOTAL_NODES || '50', 10);
 
-// Handle backward compatibility: migrate memory.json to memory.jsonl if needed
-async function ensureMemoryFilePath(): Promise<string> {
-  if (process.env.MEMORY_FILE_PATH) {
-    // Custom path provided, use it as-is (with absolute path resolution)
-    return path.isAbsolute(process.env.MEMORY_FILE_PATH)
+// Memory file path: absolute or relative to script directory
+const MEMORY_FILE_PATH = process.env.MEMORY_FILE_PATH
+  ? (path.isAbsolute(process.env.MEMORY_FILE_PATH)
       ? process.env.MEMORY_FILE_PATH
-      : path.join(path.dirname(fileURLToPath(import.meta.url)), process.env.MEMORY_FILE_PATH);
-  }
-  
-  // No custom path set, check for backward compatibility migration
-  const oldMemoryPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'memory.json');
-  const newMemoryPath = defaultMemoryPath;
-  
-  try {
-    // Check if old file exists and new file doesn't
-    await fs.access(oldMemoryPath);
-    try {
-      await fs.access(newMemoryPath);
-      // Both files exist, use new one (no migration needed)
-      return newMemoryPath;
-    } catch {
-      // Old file exists, new file doesn't - migrate
-      console.error('DETECTED: Found legacy memory.json file, migrating to memory.jsonl for JSONL format compatibility');
-      await fs.rename(oldMemoryPath, newMemoryPath);
-      console.error('COMPLETED: Successfully migrated memory.json to memory.jsonl');
-      return newMemoryPath;
-    }
-  } catch {
-    // Old file doesn't exist, use new path
-    return newMemoryPath;
-  }
-}
+      : path.join(path.dirname(fileURLToPath(import.meta.url)), process.env.MEMORY_FILE_PATH))
+  : path.join(path.dirname(fileURLToPath(import.meta.url)), 'data', 'memory.jsonl');
 
-// Initialize memory file path (will be set during startup)
-let MEMORY_FILE_PATH: string;
-
-// We are storing our memory using entities, relations, and observations in a graph structure
+// Graph structure: entities with observations + relations
 interface Entity {
   name: string;
   entityType: string;
   observations: string[];
-  created_at?: number;   // Unix timestamp (ms) when entity was created
-  updated_at?: number;   // Unix timestamp (ms) when last modified
+  created_at?: number;  // Unix timestamp (ms)
+  updated_at?: number;  // Unix timestamp (ms)
 }
 
 interface Relation {
@@ -85,38 +54,62 @@ interface KnowledgeGraph {
   relations: Relation[];
 }
 
-// The KnowledgeGraphManager class contains all operations to interact with the knowledge graph
+// Knowledge graph manager with O(1) hash index + inverted index for search
 class KnowledgeGraphManager {
-  // Hash index for O(1) entity lookup by name
   private entityIndex: Map<string, Entity> = new Map();
-
-  // Inverted index for sparse vector search: term -> Set of entity names
   private invertedIndex: Map<string, Set<string>> = new Map();
+
+  // File locking wrapper for safe concurrent access
+  private async withFileLock<T>(operation: () => Promise<T>): Promise<T> {
+    // Ensure directory exists
+    const dir = path.dirname(MEMORY_FILE_PATH);
+    await fs.mkdir(dir, { recursive: true });
+
+    // Ensure file exists (lockfile requires existing file)
+    try {
+      await fs.access(MEMORY_FILE_PATH);
+    } catch {
+      await fs.writeFile(MEMORY_FILE_PATH, '');
+    }
+
+    // Acquire lock with retry strategy
+    const release = await lockfile.lock(MEMORY_FILE_PATH, {
+      stale: 10000,           // Consider lock stale after 10s
+      update: 5000,           // Update lock every 5s to prove liveness
+      retries: {
+        retries: 5,           // Retry up to 5 times
+        factor: 2,            // Exponential backoff
+        minTimeout: 100,      // Min 100ms between retries
+        maxTimeout: 2000,     // Max 2s between retries
+      },
+    });
+
+    try {
+      return await operation();
+    } finally {
+      await release();
+    }
+  }
 
   private async loadGraph(): Promise<KnowledgeGraph> {
     try {
       const data = await fs.readFile(MEMORY_FILE_PATH, "utf-8");
-      const lines = data.split("\n").filter(line => line.trim() !== "");
-      const graph = lines.reduce((graph: KnowledgeGraph, line) => {
-        const item = JSON.parse(line);
+      const graph = data.split("\n").filter(l => l.trim()).reduce((g: KnowledgeGraph, l) => {
+        const item = JSON.parse(l);
         if (item.type === "entity") {
-          // Backward compatibility: if no timestamps, leave as undefined
-          const entity: Entity = {
+          g.entities.push({
             name: item.name,
             entityType: item.entityType,
             observations: item.observations,
             created_at: item.created_at,
             updated_at: item.updated_at
-          };
-          graph.entities.push(entity);
+          });
+        } else if (item.type === "relation") {
+          g.relations.push(item as Relation);
         }
-        if (item.type === "relation") graph.relations.push(item as Relation);
-        return graph;
+        return g;
       }, { entities: [], relations: [] });
-
-      // Rebuild indexes after loading
       this.rebuildIndexes(graph);
-
       return graph;
     } catch (error) {
       if (error instanceof Error && 'code' in error && (error as any).code === "ENOENT") {
@@ -128,413 +121,274 @@ class KnowledgeGraphManager {
 
   private async saveGraph(graph: KnowledgeGraph): Promise<void> {
     const lines = [
-      ...graph.entities.map(e => {
-        const entityData: any = {
-          type: "entity",
-          name: e.name,
-          entityType: e.entityType,
-          observations: e.observations
-        };
-        // Include timestamps if present
-        if (e.created_at !== undefined) entityData.created_at = e.created_at;
-        if (e.updated_at !== undefined) entityData.updated_at = e.updated_at;
-        return JSON.stringify(entityData);
-      }),
+      ...graph.entities.map(e => JSON.stringify({
+        type: "entity",
+        name: e.name,
+        entityType: e.entityType,
+        observations: e.observations,
+        ...(e.created_at && { created_at: e.created_at }),
+        ...(e.updated_at && { updated_at: e.updated_at })
+      })),
       ...graph.relations.map(r => JSON.stringify({
         type: "relation",
         from: r.from,
         to: r.to,
         relationType: r.relationType
-      })),
+      }))
     ];
-    await fs.writeFile(MEMORY_FILE_PATH, lines.join("\n"));
 
-    // Rebuild indexes after saving
+    // Atomic write: write to temp file, then rename
+    const content = lines.join("\n") + (lines.length > 0 ? "\n" : "");
+    const tempPath = `${MEMORY_FILE_PATH}.tmp.${process.pid}`;
+
+    await fs.writeFile(tempPath, content, 'utf-8');
+    await fs.rename(tempPath, MEMORY_FILE_PATH);  // Atomic on POSIX
+
     this.rebuildIndexes(graph);
   }
 
-  // Tokenize text into searchable terms (simple but effective)
+  // Tokenize: lowercase, split on non-word chars (keep hyphens), filter short terms
   private tokenize(text: string): string[] {
-    return text
-      .toLowerCase()
-      .replace(/[^\w\s-]/g, ' ') // Keep hyphens for compound terms
-      .split(/\s+/)
-      .filter(term => term.length > 2); // Skip very short terms
+    return text.toLowerCase().replace(/[^\w\s-]/g, ' ').split(/\s+/).filter(t => t.length > 2);
   }
 
-  // Rebuild both hash and inverted indexes
+  // Rebuild indexes: hash (name→entity) and inverted (token→Set<name>)
   private rebuildIndexes(graph: KnowledgeGraph): void {
-    // Clear existing indexes
     this.entityIndex.clear();
     this.invertedIndex.clear();
-
-    // Build hash index and inverted index simultaneously
-    graph.entities.forEach(entity => {
-      // Hash index: entity name -> entity object
-      this.entityIndex.set(entity.name, entity);
-
-      // Inverted index: tokenize all searchable text
-      const searchableText = [
-        entity.name,
-        entity.entityType,
-        ...entity.observations
-      ].join(' ');
-
-      const tokens = this.tokenize(searchableText);
-      tokens.forEach(token => {
-        if (!this.invertedIndex.has(token)) {
-          this.invertedIndex.set(token, new Set());
-        }
-        this.invertedIndex.get(token)!.add(entity.name);
+    graph.entities.forEach(e => {
+      this.entityIndex.set(e.name, e);
+      this.tokenize([e.name, e.entityType, ...e.observations].join(' ')).forEach(t => {
+        if (!this.invertedIndex.has(t)) this.invertedIndex.set(t, new Set());
+        this.invertedIndex.get(t)!.add(e.name);
       });
     });
   }
 
   async createEntities(entities: Entity[]): Promise<Entity[]> {
-    const graph = await this.loadGraph();
-    const now = Date.now();
-    const newEntities = entities.filter(e => !graph.entities.some(existingEntity => existingEntity.name === e.name));
-
-    // Set timestamps for new entities
-    newEntities.forEach(entity => {
-      entity.created_at = now;
-      entity.updated_at = now;
+    return this.withFileLock(async () => {
+      const graph = await this.loadGraph();
+      const now = Date.now();
+      const existingNames = new Set(graph.entities.map(e => e.name));
+      const newEntities = entities.filter(e => !existingNames.has(e.name)).map(e => ({
+        ...e, created_at: now, updated_at: now
+      }));
+      graph.entities.push(...newEntities);
+      await this.saveGraph(graph);
+      return newEntities;
     });
-
-    graph.entities.push(...newEntities);
-    await this.saveGraph(graph);
-    return newEntities;
   }
 
   async createRelations(relations: Relation[]): Promise<Relation[]> {
-    const graph = await this.loadGraph();
-    const newRelations = relations.filter(r => !graph.relations.some(existingRelation => 
-      existingRelation.from === r.from && 
-      existingRelation.to === r.to && 
-      existingRelation.relationType === r.relationType
-    ));
-    graph.relations.push(...newRelations);
-    await this.saveGraph(graph);
-    return newRelations;
+    return this.withFileLock(async () => {
+      const graph = await this.loadGraph();
+      const existing = new Set(graph.relations.map(r => `${r.from}|${r.to}|${r.relationType}`));
+      const newRelations = relations.filter(r => !existing.has(`${r.from}|${r.to}|${r.relationType}`));
+      graph.relations.push(...newRelations);
+      await this.saveGraph(graph);
+      return newRelations;
+    });
   }
 
   async addObservations(observations: { entityName: string; contents: string[] }[]): Promise<{ entityName: string; addedObservations: string[] }[]> {
-    const graph = await this.loadGraph();
-    const now = Date.now();
-    const results = observations.map(o => {
-      // Use hash index for O(1) lookup instead of O(n) find
-      const entity = this.entityIndex.get(o.entityName);
-      if (!entity) {
-        throw new Error(`Entity with name ${o.entityName} not found`);
-      }
-      const newObservations = o.contents.filter(content => !entity.observations.includes(content));
-      if (newObservations.length > 0) {
-        entity.observations.push(...newObservations);
-        // Update timestamp when observations are added
-        entity.updated_at = now;
-      }
-      return { entityName: o.entityName, addedObservations: newObservations };
+    return this.withFileLock(async () => {
+      const graph = await this.loadGraph();
+      const now = Date.now();
+      const results = observations.map(o => {
+        const entity = this.entityIndex.get(o.entityName);
+        if (!entity) throw new Error(`Entity ${o.entityName} not found`);
+        const existing = new Set(entity.observations);
+        const newObs = o.contents.filter(c => !existing.has(c));
+        if (newObs.length > 0) {
+          entity.observations.push(...newObs);
+          entity.updated_at = now;
+        }
+        return { entityName: o.entityName, addedObservations: newObs };
+      });
+      await this.saveGraph(graph);
+      return results;
     });
-    await this.saveGraph(graph);
-    return results;
   }
 
   async deleteEntities(entityNames: string[]): Promise<void> {
-    const graph = await this.loadGraph();
-    graph.entities = graph.entities.filter(e => !entityNames.includes(e.name));
-    graph.relations = graph.relations.filter(r => !entityNames.includes(r.from) && !entityNames.includes(r.to));
-    await this.saveGraph(graph);
+    await this.withFileLock(async () => {
+      const graph = await this.loadGraph();
+      const deleteSet = new Set(entityNames);
+      graph.entities = graph.entities.filter(e => !deleteSet.has(e.name));
+      graph.relations = graph.relations.filter(r => !deleteSet.has(r.from) && !deleteSet.has(r.to));
+      await this.saveGraph(graph);
+    });
   }
 
   async deleteObservations(deletions: { entityName: string; observations: string[] }[]): Promise<void> {
-    const graph = await this.loadGraph();
-    const now = Date.now();
-    deletions.forEach(d => {
-      // Use hash index for O(1) lookup
-      const entity = this.entityIndex.get(d.entityName);
-      if (entity) {
-        const originalLength = entity.observations.length;
-        entity.observations = entity.observations.filter(o => !d.observations.includes(o));
-        // Update timestamp if observations were actually deleted
-        if (entity.observations.length < originalLength) {
-          entity.updated_at = now;
+    await this.withFileLock(async () => {
+      const graph = await this.loadGraph();
+      const now = Date.now();
+      deletions.forEach(d => {
+        const entity = this.entityIndex.get(d.entityName);
+        if (entity) {
+          const deleteSet = new Set(d.observations);
+          const origLen = entity.observations.length;
+          entity.observations = entity.observations.filter(o => !deleteSet.has(o));
+          if (entity.observations.length < origLen) entity.updated_at = now;
         }
-      }
+      });
+      await this.saveGraph(graph);
     });
-    await this.saveGraph(graph);
   }
 
   async deleteRelations(relations: Relation[]): Promise<void> {
-    const graph = await this.loadGraph();
-    graph.relations = graph.relations.filter(r => !relations.some(delRelation => 
-      r.from === delRelation.from && 
-      r.to === delRelation.to && 
-      r.relationType === delRelation.relationType
-    ));
-    await this.saveGraph(graph);
+    await this.withFileLock(async () => {
+      const graph = await this.loadGraph();
+      const deleteSet = new Set(relations.map(r => `${r.from}|${r.to}|${r.relationType}`));
+      graph.relations = graph.relations.filter(r => !deleteSet.has(`${r.from}|${r.to}|${r.relationType}`));
+      await this.saveGraph(graph);
+    });
   }
 
   async readGraph(): Promise<KnowledgeGraph> {
     return this.loadGraph();
   }
 
-  // Find shortest path between two nodes using BFS (bidirectional graph)
-  private findShortestPath(
-    from: string,
-    to: string,
-    graph: KnowledgeGraph,
-    maxLength: number
-  ): string[] | null {
+  // BFS shortest path (bidirectional graph, max depth limit)
+  private findShortestPath(from: string, to: string, graph: KnowledgeGraph, maxLen: number): string[] | null {
     if (from === to) return [from];
 
-    // Build adjacency list for bidirectional traversal
-    const adjacency = new Map<string, Set<string>>();
-    graph.relations.forEach(rel => {
-      // Forward direction
-      if (!adjacency.has(rel.from)) adjacency.set(rel.from, new Set());
-      adjacency.get(rel.from)!.add(rel.to);
-      // Backward direction (treat relations as undirected)
-      if (!adjacency.has(rel.to)) adjacency.set(rel.to, new Set());
-      adjacency.get(rel.to)!.add(rel.from);
+    // Build adjacency list (bidirectional)
+    const adj = new Map<string, Set<string>>();
+    graph.relations.forEach(r => {
+      if (!adj.has(r.from)) adj.set(r.from, new Set());
+      adj.get(r.from)!.add(r.to);
+      if (!adj.has(r.to)) adj.set(r.to, new Set());
+      adj.get(r.to)!.add(r.from);
     });
 
-    // BFS with parent tracking
     const queue: string[] = [from];
-    const visited = new Set<string>([from]);
+    const visited = new Set([from]);
     const parent = new Map<string, string>();
     let depth = 0;
 
-    while (queue.length > 0 && depth < maxLength) {
+    while (queue.length > 0 && depth < maxLen) {
       const levelSize = queue.length;
-
       for (let i = 0; i < levelSize; i++) {
-        const current = queue.shift()!;
-
-        if (current === to) {
-          // Reconstruct path
+        const curr = queue.shift()!;
+        if (curr === to) {
           const path: string[] = [];
-          let node = to;
-          while (node !== undefined) {
-            path.unshift(node);
-            node = parent.get(node)!;
-          }
+          for (let n = to; n; n = parent.get(n)!) path.unshift(n);
           return path;
         }
-
-        const neighbors = adjacency.get(current);
-        if (neighbors) {
-          neighbors.forEach(neighbor => {
-            if (!visited.has(neighbor)) {
-              visited.add(neighbor);
-              parent.set(neighbor, current);
-              queue.push(neighbor);
-            }
-          });
-        }
+        adj.get(curr)?.forEach(nb => {
+          if (!visited.has(nb)) {
+            visited.add(nb);
+            parent.set(nb, curr);
+            queue.push(nb);
+          }
+        });
       }
       depth++;
     }
-
-    return null; // No path found within maxLength
+    return null;
   }
 
-  // Steiner Tree approximation: find minimal subgraph connecting entry nodes
-  // Uses pairwise shortest paths (2-approximation of optimal Steiner Tree)
-  private findSteinerTree(
-    entryNodes: Set<string>,
-    graph: KnowledgeGraph,
-    maxPathLength: number
-  ): Set<string> {
-    if (entryNodes.size === 0) return new Set();
-    if (entryNodes.size === 1) return new Set(entryNodes);
-
-    const connectedNodes = new Set<string>(entryNodes);
-    const entryArray = Array.from(entryNodes);
-
-    // Find shortest path between each pair of entry nodes
-    for (let i = 0; i < entryArray.length; i++) {
-      for (let j = i + 1; j < entryArray.length; j++) {
-        const path = this.findShortestPath(
-          entryArray[i],
-          entryArray[j],
-          graph,
-          maxPathLength
-        );
-
-        // Add all nodes in the path to result
-        if (path) {
-          path.forEach(node => connectedNodes.add(node));
-        }
+  // Steiner Tree: connect entry nodes via pairwise shortest paths (2-approx)
+  private findSteinerTree(entries: Set<string>, graph: KnowledgeGraph, maxLen: number): Set<string> {
+    if (entries.size <= 1) return new Set(entries);
+    const connected = new Set(entries);
+    const arr = Array.from(entries);
+    for (let i = 0; i < arr.length; i++) {
+      for (let j = i + 1; j < arr.length; j++) {
+        const path = this.findShortestPath(arr[i], arr[j], graph, maxLen);
+        path?.forEach(n => connected.add(n));
       }
     }
-
-    return connectedNodes;
+    return connected;
   }
 
-  // Sparse vector search using inverted index (BM25-style with importance and recency scoring)
+  // Sparse vector search: inverted index + TF×importance×recency scoring
   async searchNodes(query: string): Promise<KnowledgeGraph> {
     const graph = await this.loadGraph();
-
-    // Tokenize query
     const queryTokens = this.tokenize(query);
+    if (queryTokens.length === 0) return { entities: [], relations: [] };
 
-    if (queryTokens.length === 0) {
-      // Empty query returns empty graph
-      return { entities: [], relations: [] };
-    }
-
-    // Phase 1: Per-token entry selection with deduplication and backfill
-    // For each query token, find top candidates, then deduplicate to ensure diversity
     const now = Date.now();
-    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
 
-    // Build degree map (connectedness): entity -> count of relations
-    const degreeMap = new Map<string, number>();
-    graph.relations.forEach(rel => {
-      degreeMap.set(rel.from, (degreeMap.get(rel.from) || 0) + 1);
-      degreeMap.set(rel.to, (degreeMap.get(rel.to) || 0) + 1);
+    // Degree map: count relations per entity
+    const degree = new Map<string, number>();
+    graph.relations.forEach(r => {
+      degree.set(r.from, (degree.get(r.from) || 0) + 1);
+      degree.set(r.to, (degree.get(r.to) || 0) + 1);
     });
 
-    // Map: token -> sorted array of [entityName, score]
-    const tokenCandidates = new Map<string, Array<[string, number]>>();
+    // Score entities per query token
+    const tokenCands = new Map<string, Array<[string, number]>>();
+    queryTokens.forEach(tok => {
+      const matches = this.invertedIndex.get(tok);
+      if (!matches) return;
 
-    queryTokens.forEach(token => {
-      const matchingEntityNames = this.invertedIndex.get(token);
-      if (!matchingEntityNames) return;
+      const scores: Array<[string, number]> = [];
+      matches.forEach(name => {
+        const e = this.entityIndex.get(name);
+        if (!e) return;
 
-      // Score entities matching this specific token
-      const tokenScores: Array<[string, number]> = [];
-
-      matchingEntityNames.forEach(entityName => {
-        const entity = this.entityIndex.get(entityName);
-        if (!entity) return;
-
-        // Count how many times this token appears in entity
-        const searchableText = [
-          entity.name,
-          entity.entityType,
-          ...entity.observations
-        ].join(' ').toLowerCase();
-        const tfCount = (searchableText.match(new RegExp(token, 'g')) || []).length;
-
-        // Sublinear TF scaling: 1 + log(1 + count)
-        // Diminishing returns for repeated mentions
-        const tfScore = 1 + Math.log(1 + tfCount);
-
-        // Importance boost: combines observation richness and connectedness
-        // log(obs_count + 1) × (1 + log(1 + degree))
-        const obsImportance = Math.log(entity.observations.length + 1);
-        const degree = degreeMap.get(entityName) || 0;
-        const connectednessBoost = 1 + Math.log(1 + degree);
-        const importanceBoost = obsImportance * connectednessBoost;
-
-        // Recency boost: exp(-age / 30 days)
-        let recencyBoost = 1.0;
-        if (entity.updated_at) {
-          const ageMs = now - entity.updated_at;
-          recencyBoost = Math.exp(-ageMs / THIRTY_DAYS_MS);
-        }
-
-        // Final score = TF × importance × recency
-        const finalScore = tfScore * importanceBoost * recencyBoost;
-        tokenScores.push([entityName, finalScore]);
+        const text = [e.name, e.entityType, ...e.observations].join(' ').toLowerCase();
+        const tf = 1 + Math.log(1 + (text.match(new RegExp(tok, 'g')) || []).length);
+        const importance = Math.log(e.observations.length + 1) * (1 + Math.log(1 + (degree.get(name) || 0)));
+        const recency = e.updated_at ? Math.exp(-(now - e.updated_at) / THIRTY_DAYS) : 1.0;
+        scores.push([name, tf * importance * recency]);
       });
 
-      // Sort by score and apply relative threshold
-      tokenScores.sort((a, b) => b[1] - a[1]);
-
-      // Apply relative score threshold: keep entities scoring ≥ X% of best match
-      if (tokenScores.length > 0) {
-        const bestScore = tokenScores[0][1];
-        const minScore = bestScore * SEARCH_MIN_RELATIVE_SCORE;
-        const filteredScores = tokenScores.filter(([_, score]) => score >= minScore);
-        tokenCandidates.set(token, filteredScores);
+      scores.sort((a, b) => b[1] - a[1]);
+      if (scores.length > 0) {
+        const minScore = scores[0][1] * SEARCH_MIN_RELATIVE_SCORE;
+        tokenCands.set(tok, scores.filter(([_, s]) => s >= minScore));
       }
     });
 
-    // Deduplicate: ensure diverse entities across tokens
-    const entryNodesSet = new Set<string>();
-
-    // Select up to TOP_PER_TOKEN entities per token, avoiding duplicates
-    queryTokens.forEach(token => {
-      const candidates = tokenCandidates.get(token);
-      if (!candidates || candidates.length === 0) {
-        return;
-      }
-
-      let selectedCount = 0;
-      for (const [entityName, score] of candidates) {
-        if (selectedCount >= SEARCH_TOP_PER_TOKEN) break;
-
-        if (!entryNodesSet.has(entityName)) {
-          entryNodesSet.add(entityName);
-          selectedCount++;
+    // Deduplicate: select top N per token
+    const entries = new Set<string>();
+    queryTokens.forEach(tok => {
+      const cands = tokenCands.get(tok);
+      if (!cands) return;
+      let count = 0;
+      for (const [name] of cands) {
+        if (count >= SEARCH_TOP_PER_TOKEN) break;
+        if (!entries.has(name)) {
+          entries.add(name);
+          count++;
         }
       }
     });
 
-    // If no entities found, return empty graph
-    if (entryNodesSet.size === 0) {
-      return { entities: [], relations: [] };
-    }
+    if (entries.size === 0) return { entities: [], relations: [] };
 
-    // Phase 2: Find minimal connecting structure (Steiner Tree approximation)
-    const allConnectedNodes = this.findSteinerTree(entryNodesSet, graph, SEARCH_MAX_PATH_LENGTH);
+    // Find connecting paths (Steiner Tree)
+    const connected = this.findSteinerTree(entries, graph, SEARCH_MAX_PATH_LENGTH);
 
-    // Apply total node limit (safety cap)
-    let finalNodeNames: string[];
-    if (allConnectedNodes.size <= SEARCH_MAX_TOTAL_NODES) {
-      // All nodes fit within limit
-      finalNodeNames = Array.from(allConnectedNodes);
+    // Apply node limit: prioritize entry nodes, then intermediate
+    let finalNames: string[];
+    if (connected.size <= SEARCH_MAX_TOTAL_NODES) {
+      finalNames = Array.from(connected);
     } else {
-      // Prioritize entry nodes, then add intermediate nodes up to limit
-      const entryNodeNames = Array.from(entryNodesSet);
-      finalNodeNames = [...entryNodeNames];
-      const intermediateNodes = Array.from(allConnectedNodes).filter(
-        name => !entryNodesSet.has(name)
-      );
-      const remainingSlots = SEARCH_MAX_TOTAL_NODES - entryNodeNames.length;
-      finalNodeNames.push(...intermediateNodes.slice(0, remainingSlots));
+      finalNames = Array.from(entries);
+      const inter = Array.from(connected).filter(n => !entries.has(n));
+      finalNames.push(...inter.slice(0, SEARCH_MAX_TOTAL_NODES - finalNames.length));
     }
 
-    // Retrieve entity objects using hash index (O(1) per entity)
-    const finalEntities = finalNodeNames
-      .map(name => this.entityIndex.get(name))
-      .filter((e): e is Entity => e !== undefined);
-
-    // Create a Set of final entity names for quick lookup
-    const finalEntityNamesSet = new Set(finalNodeNames);
-
-    // Filter relations to only include those between final entities
-    const finalRelations = graph.relations.filter(r =>
-      finalEntityNamesSet.has(r.from) && finalEntityNamesSet.has(r.to)
-    );
-
+    const finalSet = new Set(finalNames);
     return {
-      entities: finalEntities,
-      relations: finalRelations,
+      entities: finalNames.map(n => this.entityIndex.get(n)!).filter(Boolean),
+      relations: graph.relations.filter(r => finalSet.has(r.from) && finalSet.has(r.to))
     };
   }
 
   async openNodes(names: string[]): Promise<KnowledgeGraph> {
     const graph = await this.loadGraph();
-
-    // Use hash index for O(1) lookup per entity instead of O(n) filter
-    const filteredEntities = names
-      .map(name => this.entityIndex.get(name))
-      .filter((e): e is Entity => e !== undefined);
-
-    // Create a Set of filtered entity names for quick lookup
-    const filteredEntityNames = new Set(filteredEntities.map(e => e.name));
-
-    // Filter relations to include all 1-hop connections (relations where either endpoint is in the requested entities)
-    const filteredRelations = graph.relations.filter(r =>
-      filteredEntityNames.has(r.from) || filteredEntityNames.has(r.to)
-    );
-
+    const entities = names.map(n => this.entityIndex.get(n)!).filter(Boolean);
+    const nameSet = new Set(names);
     return {
-      entities: filteredEntities,
-      relations: filteredRelations,
+      entities,
+      relations: graph.relations.filter(r => nameSet.has(r.from) || nameSet.has(r.to))
     };
   }
 }
@@ -544,8 +398,8 @@ const knowledgeGraphManager = new KnowledgeGraphManager();
 
 // The server instance and tools exposed to Claude
 const server = new Server({
-  name: "memory-server",
-  version: "0.6.3",
+  name: "mcp-memory-server-concurrent",
+  version: "1.0.0",
 },    {
     capabilities: {
       tools: {},
@@ -557,7 +411,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: "create_entities",
-        description: "Create multiple new entities in the knowledge graph. Best practice: use granular, focused entities rather than large aggregates. Each entity should represent a single concept, project, or component.",
+        description: "Create entities in the knowledge graph. Use granular well connected entires for best results. Use search_nodes and/or open_nodes for planning.",
         inputSchema: {
           type: "object",
           properties: {
@@ -585,7 +439,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "create_relations",
-        description: "Create multiple new relations between entities in the knowledge graph. Relations should be in active voice. Best practice: always connect new entities to existing ones to ensure graph connectivity and improve retrieval.",
+        description: "Create relations between entities. Use active voice. Connect new entities to existing ones for better retrieval.",
         inputSchema: {
           type: "object",
           properties: {
@@ -609,7 +463,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "add_observations",
-        description: "Add new observations to existing entities in the knowledge graph. Best practice: prefer adding observations to existing entities over creating new ones when information relates to the same concept.",
+        description: "Add observations to existing entities. Prefer this over creating new entities for closely related information.",
         inputSchema: {
           type: "object",
           properties: {
@@ -636,7 +490,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "delete_entities",
-        description: "Delete multiple entities and their associated relations from the knowledge graph",
+        description: "Delete entities and their relations from the graph. Use actively for improving quality.",
         inputSchema: {
           type: "object",
           properties: {
@@ -652,7 +506,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "delete_observations",
-        description: "Delete specific observations from entities in the knowledge graph",
+        description: "Delete observations from entities. Use actively for improving quality.",
         inputSchema: {
           type: "object",
           properties: {
@@ -679,7 +533,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "delete_relations",
-        description: "Delete multiple relations from the knowledge graph",
+        description: "Delete relations from the graph. Use actively for improving quality.",
         inputSchema: {
           type: "object",
           properties: {
@@ -713,7 +567,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "search_nodes",
-        description: "Search for nodes in the knowledge graph based on a query. Uses multi-term semantic matching - each query term finds its best representatives, then returns entities connecting them.",
+        description: "Search nodes by query. Multi-term matching: each term finds best matches, returns connecting entities.",
         inputSchema: {
           type: "object",
           properties: {
@@ -725,7 +579,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "open_nodes",
-        description: "Open specific nodes in the knowledge graph by their names, including all their direct connections (1-hop relations). Use this to explore entity neighborhoods before creating new entities.",
+        description: "Open nodes by name with 1-hop relations. Use to explore neighborhoods, creating or deleting, planning quality improvement operations.",
         inputSchema: {
           type: "object",
           properties: {
@@ -780,12 +634,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 async function main() {
-  // Initialize memory file path with backward compatibility
-  MEMORY_FILE_PATH = await ensureMemoryFilePath();
-  
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Knowledge Graph MCP Server running on stdio");
+  console.error(`Memory file: ${MEMORY_FILE_PATH}`);
 }
 
 main().catch((error) => {

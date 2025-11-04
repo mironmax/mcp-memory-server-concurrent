@@ -1,25 +1,21 @@
-# Enhanced MCP Memory Server
+# MCP Memory Server - Concurrent Edition
 
-Dockerized MCP memory server with inverted index search, per-token semantic matching, sublinear TF scoring, and Steiner Tree path-finding for intelligent context discovery.
+High-performance MCP memory server with concurrent access support, inverted index search, per-token semantic matching, and Steiner Tree path-finding for intelligent context discovery.
 
-## Features
+## Key Features
 
-| Feature | Original | Enhanced |
-|---------|----------|----------|
-| Search method | Substring match | Per-token selection + Steiner Tree |
-| Performance | O(n×k) | O(t×log m) + O(V+E) |
-| Word order | Dependent | Independent |
-| Multi-word queries | Fails | Works |
-| Ranking | None | Sublinear TF × importance × recency |
-| Semantic diversity | No | Per-token entry selection |
-| Timestamps | None | created_at, updated_at |
-| Context discovery | None | Shortest paths between concepts |
+- **Concurrent Access**: Safe multi-agent access via file locking
+- **Fast Search**: Inverted index with O(t×log m) complexity
+- **Smart Ranking**: TF × importance × recency scoring
+- **Context Discovery**: Steiner Tree path-finding between concepts
+- **Temporal Tracking**: Entity timestamps for recency-based ranking
+- **Dockerized**: Persistent storage with volume mounts
 
 ## Quick Start
 
 ```bash
 # Build and start
-docker-compose up -d --build
+docker compose up -d --build
 
 # Verify running
 docker ps | grep mcp-memory-server
@@ -44,36 +40,86 @@ Update `~/.claude.json`:
 }
 ```
 
-**Note:** The `MEMORY_FILE_PATH` is automatically set to `/app/data/memory.jsonl` inside the container. To change where data is stored on your **host**, modify `DATA_DIR` in the `.env` file.
-
 **After updating, restart Claude Code.**
 
-### Migrating from NPX Version
+## What This Memory Layer Does
 
-If migrating from the original NPX-based installation:
+This MCP server provides **interconnectedness** for Claude Code across:
 
-```bash
-# Copy existing data
-cp ~/.claude/memory.jsonl ~/DevProj/mcp-memory-server/data/memory.jsonl
+- **Separate Sessions**: Claude remembers context from previous conversations
+- **Multiple Projects**: Knowledge from one project informs work on others
+- **Work Stages**: Track what's done, in progress, blocked, or planned
+- **Patterns & Learning**: Capture and reuse architectural patterns, workflows, and solutions
 
-# Backup old config
-cp ~/.claude.json ~/.claude.json.backup
+Think of it as a **knowledge graph** that connects concepts, projects, tools, and decisions. Instead of starting fresh each session, Claude can:
+
+1. **Retrieve relevant context** at the start of each interaction
+2. **Discover connections** between seemingly unrelated concepts
+3. **Learn from past work** and apply patterns to new situations
+4. **Track project evolution** over time
+
+### Example Use Case
+
+You're debugging an OAuth flow. Memory helps Claude:
+- Find the entity `oauth-token-handling` from a previous project
+- Discover it's connected to `n8n-workflow` and `zoom-api-integration`
+- Surface relevant observations like "Token refresh fails after 1 hour"
+- Apply the solution pattern to your current debugging session
+
+Without memory, each session starts from zero. With memory, Claude builds on accumulated knowledge.
+
+## Guiding Claude's Memory Usage
+
+Create a `.claude/CLAUDE.md` file in your project (or globally at `~/.claude/CLAUDE.md`) to instruct Claude on how to use memory effectively:
+
+### Minimal Template
+
+```markdown
+# Memory Usage
+
+For each interaction:
+
+1. **Start by searching memory** for relevant context about the current project/task
+2. **Capture new knowledge** as you work:
+   - Create entities for: projects, tools, patterns, features, bugs, decisions
+   - Use relations to connect them: uses, depends_on, implements, solves
+   - Store facts as observations (what works, what doesn't, why decisions were made)
+3. **Update progress** after completing tasks
+
+## Project Context
+
+- Project: [Your project name]
+- Tech stack: [Main technologies]
+- Current focus: [What you're working on]
 ```
+
+### Advanced Template
+
+For more sophisticated memory usage, see the comprehensive template with relation types and patterns in the repository's `CLAUDE.md.example` file.
+
+### Why This Matters
+
+- **Search quality**: Claude uses your project terminology in memory queries
+- **Knowledge capture**: Defines what information is worth remembering
+- **Cross-session continuity**: Ensures context carries between conversations
+- **Pattern reuse**: Helps Claude apply solutions from past work
+
+**Pro tip**: Start minimal, evolve as you discover what knowledge is most valuable to capture.
 
 ## Container Management
 
 ```bash
 # Start
-docker-compose up -d
+docker compose up -d
 
 # Stop
-docker-compose down
+docker compose down
 
 # Restart
-docker-compose restart
+docker compose restart
 
 # Rebuild after code changes
-docker-compose up -d --build
+docker compose up -d --build
 
 # View logs
 docker logs -f mcp-memory-server
@@ -83,27 +129,40 @@ docker logs -f mcp-memory-server
 
 Environment variables in `.env` file:
 
-- `DATA_DIR`: Host directory to mount for persistent storage (default: `./data`)
-  - This directory on your host will be mapped to `/app/data` in the container
-  - The `memory.jsonl` file will be stored here
-- `SEARCH_TOP_PER_TOKEN`: Number of entities to select per query term (default: `1`)
-  - Ensures semantic diversity - each concept in your query gets representation
-  - Higher values = more entities per concept, more comprehensive results
+### Storage Configuration
+- `DATA_DIR`: Host directory for persistent storage (default: `./data`)
+  - Maps to `/app/data` in container
+  - Contains `memory.jsonl` file
+
+### Search Configuration
+- `SEARCH_TOP_PER_TOKEN`: Entities per query term (default: `1`)
+  - Ensures semantic diversity
   - Range: 1-5 recommended
-- `SEARCH_MIN_RELATIVE_SCORE`: Minimum relative score threshold, 0.0-1.0 (default: `0.3`)
-  - Filters weak matches - entities must score ≥ X% of the best match per token
+
+- `SEARCH_MIN_RELATIVE_SCORE`: Relative score threshold 0.0-1.0 (default: `0.3`)
+  - Filters weak matches
   - 0.3 = keep entities scoring ≥30% of top match
-  - Higher = stricter filtering, lower = more diverse matches
-- `SEARCH_MAX_PATH_LENGTH`: Maximum path length in hops (default: `5`)
-  - Controls connection depth when finding paths between entry nodes
-  - Higher = longer chains, more intermediate nodes
+
+- `SEARCH_MAX_PATH_LENGTH`: Maximum hops for path-finding (default: `5`)
+  - Controls connection depth
   - Range: 1-10 recommended
-- `SEARCH_MAX_TOTAL_NODES`: Maximum total nodes in final result (default: `50`)
-  - Safety cap to prevent unbounded growth
-  - Entry nodes prioritized if limit exceeded
+
+- `SEARCH_MAX_TOTAL_NODES`: Maximum nodes in result (default: `50`)
+  - Safety cap for result size
   - Range: 10-100 recommended
 
 See `example.env` for detailed explanations.
+
+## Concurrent Access
+
+All mutation operations are protected by file locking:
+- **Lock strategy**: Cooperative file locking via `proper-lockfile`
+- **Stale timeout**: 10 seconds
+- **Retry logic**: 5 attempts with exponential backoff (100ms-2s)
+- **Atomic writes**: Temp file + rename pattern
+- **Read operations**: Lock-free (eventual consistency)
+
+This allows multiple agents to safely create entities, relations, and observations simultaneously without race conditions or data corruption.
 
 ## Data Persistence
 
@@ -119,7 +178,7 @@ cp data/memory.jsonl data/memory.jsonl.backup
 
 # Restore
 cp data/memory.jsonl.backup data/memory.jsonl
-docker-compose restart
+docker compose restart
 ```
 
 ## How It Works
@@ -134,7 +193,7 @@ Maps terms to entities: `{docker: [entity1, entity2], mcp: [entity1, entity3]}`
 ```
 TF (sublinear): 1 + log(1 + frequency)
 Importance: log(observations + 1) × (1 + log(1 + degree))
-Recency: linear decay over 30 days
+Recency: exp(-age / 30 days)
 Final score = TF × Importance × Recency
 ```
 
@@ -163,50 +222,27 @@ Final score = TF × Importance × Recency
 
 **Why This Works**: Per-token selection ensures each query concept is represented. Steiner Tree finds minimal paths connecting these concepts, surfacing relevant intermediate context without neighborhood explosion.
 
-## Test Results
+## Performance Characteristics
 
-Comparative testing (Enhanced vs Original on 73 entities):
-
-**Query: "docker memory server"**
-- Enhanced: 5 highly relevant results, ranked by importance
-- Original: 0 results (phrase matching failed)
-
-**Single-word queries: "docker", "memory", "server"**
-- Enhanced: 5 top-ranked results each (46% fewer on average)
-- Original: 8-17 unranked results per query
-
-**Conclusion**: Enhanced version delivers more concise, relevant results through tokenization and TF-based ranking. Top-k limiting (default 5) eliminates noise while relevance scoring surfaces most important entities first.
-
-### Graph Traversal Test
-
-**Setup**: Created test chain with relations
-```
-zoom-api-integration → oauth-protocol-handler → scope-management → timeline-feature
-```
-
-**Query**: "zoom timeline scope"
-
-**Results**:
-- ✅ `zoom-api-integration` (entry node - matches "zoom")
-- ✅ `oauth-protocol-handler` (intermediate - NO query match, discovered via traversal)
-- ✅ `scope-management` (entry node - matches "scope")
-- ✅ All connecting relations included
-
-**Proof**: `oauth-protocol-handler` appeared despite containing none of the query terms, demonstrating successful context discovery through graph traversal. This allows the search to surface implicit connections between concepts.
+| Metric | Value |
+|--------|-------|
+| Search complexity | O(t×log m) + O(V+E) |
+| Lock acquisition | 1-5ms (uncontended) |
+| Lock retry | Up to 5 attempts |
+| Stale timeout | 10 seconds |
+| Read operations | Lock-free |
+| Write operations | Serialized |
 
 ## Known Limitations
 
 ⚠️ **Hyphenated compounds**: "docker-compose" won't match "docker"
 - **Workaround**: Include both terms in query: "docker compose"
-- **Fix**: Update tokenization to split hyphens (Priority 1 future enhancement)
 
 ⚠️ **Synonyms**: "container" won't find "docker"
 - **Workaround**: Use known exact terms from observations
-- **Fix**: Add synonym expansion (Priority 3 future enhancement)
 
 ⚠️ **Word variants**: "containerization" won't match "containerize"
 - **Workaround**: Try multiple word forms
-- **Fix**: Add stemming library (Priority 2 future enhancement)
 
 ## Development
 
@@ -225,15 +261,14 @@ npm run watch
 
 ```
 .
-├── index.ts              # Enhanced MCP server implementation
+├── index.ts              # MCP server implementation
 ├── package.json          # Dependencies
 ├── tsconfig.json         # TypeScript configuration
 ├── Dockerfile            # Container build
 ├── docker-compose.yml    # Orchestration
 ├── data/
 │   └── memory.jsonl      # Persistent knowledge graph storage
-├── README.md             # This file
-└── CHANGELOG.md          # Version history
+└── README.md             # This file
 ```
 
 ## Troubleshooting
@@ -254,31 +289,50 @@ docker inspect mcp-memory-server | grep -A 10 Mounts
 2. Check Claude Code config: `~/.claude.json`
 3. Restart Claude Code after config change
 
-### Rollback to NPX version
-```json
-{
-  "mcpServers": {
-    "memory": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory"],
-      "env": {
-        "MEMORY_FILE_PATH": "/home/maxim/.claude/memory.jsonl"
-      }
-    }
-  }
-}
-```
+### Lock contention issues
+If you see lock acquisition failures:
+- Check `docker logs mcp-memory-server` for stale lock warnings
+- Increase retry count in `index.ts` if needed
+- Verify no orphaned lock files in `data/` directory
+
+## Contributing
+
+Contributions are welcome! This project aims to provide robust, concurrent memory for Claude Code.
+
+**Areas for Contribution:**
+
+- **Performance**: Optimize search algorithms, add caching strategies
+- **Features**: Synonym expansion, stemming, fuzzy matching
+- **Testing**: Concurrent stress tests, edge case coverage
+- **Documentation**: Use cases, best practices, tutorials
+- **Integrations**: Export/import formats, visualization tools
+
+**How to Contribute:**
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/your-feature`
+3. Make your changes with clear commit messages
+4. Test thoroughly (especially concurrent access scenarios)
+5. Submit a pull request with description of changes
+
+**Discussion & Feedback:**
+
+- Open an issue for bugs, feature requests, or questions
+- Share your CLAUDE.md patterns and memory strategies
+- Report performance benchmarks and optimization ideas
 
 ## License
 
-MIT (inherited from original @modelcontextprotocol/server-memory)
+MIT
 
-## Credits
+## Technical Details
 
-Based on: https://github.com/modelcontextprotocol/servers/tree/main/src/memory
+**Package**: `mcp-memory-server-concurrent` v1.0.0
 
-Enhanced with:
+**Based on**: Original MCP memory server from Anthropic
+
+**Enhancements**:
+- Concurrent access support via file locking
 - Inverted index search (10-500x performance improvement)
 - Tokenization (word order independence)
 - Per-token semantic matching (ensures diversity)
@@ -287,3 +341,4 @@ Enhanced with:
 - Relative score thresholding (adaptive filtering)
 - Temporal tracking (entity timestamps)
 - Steiner Tree path-finding (minimal connecting subgraph)
+- Atomic write pattern (temp file + rename)

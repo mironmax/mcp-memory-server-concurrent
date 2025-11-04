@@ -1,0 +1,309 @@
+# CLAUDE.md Template for Memory-Enabled Workflows
+
+This is an advanced template for guiding Claude Code's memory usage. Copy this to your project's `.claude/CLAUDE.md` or globally to `~/.claude/CLAUDE.md` and customize.
+
+## Memory Workflow
+
+For each interaction:
+
+### 1. Context Identification
+- Identify the current project/repository
+- Determine the work domain (feature, bug, refactor, etc.)
+- Note the development stage (discovery, implementation, testing, deployment)
+
+### 2. Memory Retrieval
+- **Always start** by saying "Remembering..." and search memory for relevant context
+- Use multi-word queries describing the current need
+- Use `search_nodes` for broad discovery, `open_nodes` for specific entities
+- Fallback to `read_graph` if searches return nothing
+
+### 3. Memory Capture
+
+While working, capture information in these categories:
+
+#### a) Project Context
+- Tech stack, architecture patterns
+- Deployment environment, dependencies
+- Configuration, environment variables
+
+#### b) Workflows & Patterns
+- Standard procedures, testing approach
+- Deployment process, code review practices
+- Naming conventions, folder structure
+
+#### c) Environment State
+- Local setup, active containers
+- Installed tools, version constraints
+- Development mode vs production differences
+
+#### d) Sprint & Progress
+- Completed features, current sprint goals
+- Blockers, next steps, dependencies
+- Work-in-progress, pending reviews
+
+#### e) Constraints & Rules
+- What to avoid, preferred approaches
+- Performance targets, security requirements
+- Technical debt, known limitations
+
+#### f) Infrastructure Topology
+- Service relationships, data flows
+- Cache layers, external integrations
+- Network topology, deployment targets
+
+#### g) Historical Context
+- Why certain decisions were made
+- Legacy patterns to maintain or avoid
+- Past incidents and their resolutions
+
+### 4. Memory Update
+
+After each interaction:
+- **Create entities** for: concepts, projects, services, tools, features, components
+- **Connect with relations** (see examples below)
+- **Store facts as observations** (what works, what doesn't, why)
+- **Track work state** (done, in progress, blocked, planned)
+
+### 5. Memory Optimization
+
+**Strategic Entity Design:**
+- Use generic entity types when patterns apply broadly
+- Add explicit scope in observations
+- Choose entity names that match likely query terms
+
+**Enriching Relations:**
+- Link specific → general: `demonstrates_pattern`, `example_implementation`
+- Link general → specific: `applied_to`, `discovered_during`
+- Link similar: `same_framework`, `similar_approach`, `similar_pattern`
+
+**Cross-Context Retrieval:**
+- Design memory to surface without knowing exact project name
+- Bad: "projectX-feature-bug" (only surfaces for projectX queries)
+- Good: "oauth-token-refresh-pattern" + relation to projectX
+
+**Memory Pruning:**
+- When encountering size limits, look for large entities to prune
+- Split large entities into smaller connected entities
+- Remove outdated or invalid observations
+- Explore neighborhoods before deleting to avoid breaking connections
+
+## Common Relation Types
+
+### Structural
+- `belongs_to`, `contains`, `part_of`
+- `implements`, `extends`, `wraps`
+
+### Dependency
+- `depends_on`, `requires`, `uses`
+- `integrates_with`, `calls`, `consumes`
+
+### Temporal
+- `precedes`, `follows`, `blocks`, `unblocks`
+- `active_in_sprint`, `completed_in_sprint`
+
+### Knowledge
+- `documented_in`, `explains`, `exemplifies`
+- `demonstrates_pattern`, `best_practice_for`
+- `lesson_learned_from`, `known_issue_with`
+
+### Goal & Intent
+- `supports_goal`, `enables`, `prerequisite_for`
+- `refactors`, `optimizes`, `secures`
+
+For a comprehensive list of relation types, see the "Relation Types Reference" section below.
+
+## Project-Specific Context
+
+**Project Name**: [Your project]
+**Tech Stack**: [Technologies]
+**Architecture**: [Microservices/Monolith/etc]
+**Current Phase**: [Discovery/Implementation/Maintenance]
+
+**Key Patterns to Capture**:
+- [Pattern 1]
+- [Pattern 2]
+
+**Critical Constraints**:
+- [Constraint 1]
+- [Constraint 2]
+
+---
+
+## Relation Types Reference
+
+Comprehensive list of relation types for building rich knowledge graphs.
+
+### 1. STRUCTURAL
+
+**Component Relationships:**
+- `belongs_to` - Code belongs to project, file belongs to module
+- `contains` - Project contains services, service contains components
+- `part_of` - Component is part of larger system
+- `implements` - Code implements interface/spec
+- `extends` - Inherits from, builds upon
+- `wraps` - Adapter/wrapper pattern
+
+### 2. DEPENDENCY & INTEGRATION
+
+- `depends_on` - Technical dependency
+- `requires` - Hard requirement
+- `uses` - Soft dependency, utilizes
+- `integrates_with` - Bidirectional integration
+- `calls` - Service calls another service
+- `consumes` - API/event consumption
+- `publishes_to` - Event/message publishing
+
+### 3. TEMPORAL
+
+**Sequence & Order:**
+- `precedes` - Must happen before
+- `follows` - Comes after
+- `blocks` - Prevents from starting
+- `unblocks` - Enables to proceed
+- `triggers` - Causes to start
+
+**Lifecycle & State:**
+- `active_in_sprint` - Current sprint work
+- `planned_for_next_sprint` - Immediate future
+- `completed_in_sprint` - Historical completion
+- `deferred_from` - Postponed from previous period
+
+**Development Phase:**
+- `in_discovery`, `in_design`, `in_development`
+- `in_review`, `in_staging`, `in_production`
+- `in_maintenance`, `being_sunset`
+
+### 4. KNOWLEDGE & DOCUMENTATION
+
+**Information Flow:**
+- `documented_in` - Documentation location
+- `references` - Points to resource
+- `explains` - Provides explanation for
+- `exemplifies` - Example of concept
+- `troubleshoots` - Debugging guide for
+
+**Decision Context:**
+- `decided_in` - Decision record
+- `motivated_by` - Reasoning/driver
+- `alternative_to` - Considered option
+- `rejected_because` - Decision against
+
+**Learning & Patterns:**
+- `demonstrates_pattern` - Design pattern
+- `antipattern_for` - What not to do
+- `best_practice_for` - Recommended approach
+- `lesson_learned_from` - Retrospective insight
+- `known_issue_with` - Documented problem
+
+### 5. GOAL & INTENT
+
+**Strategic Alignment:**
+- `supports_goal` - Contributes to objective
+- `enables` - Makes possible
+- `prerequisite_for` - Required for
+- `milestone_toward` - Progress marker
+
+**Technical Debt & Improvement:**
+- `creates_debt_in` - Introduces technical debt
+- `reduces_debt_in` - Debt paydown
+- `refactors` - Improvement target
+- `optimizes` - Performance improvement
+- `secures` - Security enhancement
+
+**Migration & Transformation:**
+- `migrates_from` - Migration source
+- `migrates_to` - Migration target
+- `transition_step_for` - Migration phase
+
+### 6. INFRASTRUCTURE & TOPOLOGY
+
+**Network & Communication:**
+- `proxies_to` - Proxy/gateway relationship
+- `routes_through` - Routing path
+- `load_balances_across` - Distribution
+- `failovers_to` - Redundancy target
+- `caches_for` - Caching layer
+
+**Data Flow:**
+- `reads_from` - Data source
+- `writes_to` - Data destination
+- `streams_to` - Continuous data flow
+- `transforms_data_from` - ETL source
+
+**Deployment & Environment:**
+- `deployed_on` - Infrastructure target
+- `runs_in_container` - Containerization
+- `managed_by` - Orchestration/management
+- `monitored_by` - Observability tool
+
+### 7. WORKFLOW & PROCESS
+
+**Development Workflow:**
+- `tested_by` - Testing relationship
+- `validated_by` - Validation process/tool
+- `approved_by` - Approval gate
+- `reviewed_by` - Code review
+- `deployed_via` - Deployment pipeline
+
+**Quality & Compliance:**
+- `meets_standard` - Compliance/standard
+- `violates_policy` - Policy violation
+- `requires_audit_for` - Audit requirement
+- `flagged_by` - Security/quality scan
+
+### 8. COLLABORATION & OWNERSHIP
+
+- `owned_by` - Ownership
+- `maintained_by` - Maintenance responsibility
+- `contributed_to_by` - Contribution
+- `delegated_to` - Responsibility delegation
+- `team_scope` - Team boundary
+- `cross_team_dependency` - Inter-team dependency
+
+### 9. OBSERVABILITY & OPERATIONS
+
+**Monitoring:**
+- `monitors_health_of` - Health check
+- `alerts_on` - Alerting rule
+- `logs_to` - Logging destination
+- `traces_through` - Distributed tracing
+
+**Incident Management:**
+- `caused_incident` - Incident causation
+- `affected_by_incident` - Incident impact
+- `resolved_by` - Incident resolution
+- `prevented_by` - Preventive measure
+
+---
+
+## Usage Tips
+
+1. **Start simple**: Begin with basic entities and relations, add complexity as needed
+2. **Be consistent**: Use the same relation types for similar connections
+3. **Think graph**: Design for discoverability - how will you find this later?
+4. **Prune regularly**: Remove outdated information to keep memory focused
+5. **Iterate**: Evolve your patterns as you discover what's most useful
+
+## Example Workflow
+
+```markdown
+User: "Debug the OAuth token refresh issue"
+
+Claude: "Remembering..."
+- Searches: "oauth token refresh"
+- Finds: oauth-token-handling entity
+- Discovers connections: n8n-workflow, zoom-api-integration
+- Surfaces relevant observation: "Token refresh fails after 1 hour"
+
+[Works on debugging...]
+
+Claude updates memory:
+- Creates entity: oauth-refresh-fix-2025-11-03
+- Adds observations: "Root cause: token expiry not handled", "Solution: added refresh logic with 50-minute threshold"
+- Creates relations:
+  - oauth-refresh-fix-2025-11-03 `solves` oauth-token-handling
+  - oauth-refresh-fix-2025-11-03 `implemented_in` zoom-api-integration
+  - oauth-refresh-fix-2025-11-03 `demonstrates_pattern` retry-with-exponential-backoff
+```
+
+This creates a knowledge web that future sessions can leverage.

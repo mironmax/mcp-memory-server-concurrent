@@ -1,18 +1,37 @@
 # Environment variables
 .env
+.env.local
 
 # Data directory (contains memory.jsonl)
 data/
+*.jsonl
+*.jsonl.backup
+
+# Lock files
+*.lock
 
 # Dependencies
 node_modules/
+package-lock.json
 
 # Build output
 dist/
 
 # Logs
 *.log
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # OS files
 .DS_Store
 Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/

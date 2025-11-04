@@ -1,0 +1,44 @@
+Intelligent Backup Rotation Flow
+=================================
+
+Time    Daily (7)         Weekly (4)        Monthly (12)      Yearly (∞)
+----    ---------         ----------        ------------      ----------
+Day 1   [backup-1]
+Day 2   [backup-2,1]
+Day 3   [backup-3,2,1]
+Day 4   [backup-4,3,2,1]
+Day 5   [backup-5,4,3,2,1]
+Day 6   [backup-6,5,4,3,2,1]
+Day 7   [backup-7,6,5,4,3,2,1]
+Day 8   [backup-8,7,6,5,4,3,2] → [backup-1]
+                                    ↑
+                              (promoted from daily)
+
+Day 35  [last 7 days]       [backups from      
+                             week 1,2,3,4]
+                                  ↓
+                             (oldest weekly 
+                              age 28 days)
+                                  ↓
+                             [monthly-1]
+
+Month 12 [last 7 days]      [last 4 weeks]    [months 1-12]
+                                                     ↓
+                                                (oldest monthly
+                                                 age 365 days)
+                                                     ↓
+                                                [yearly-1]
+
+Year 2+  [last 7 days]      [last 4 weeks]    [months 1-12]    [year1,2,3,...]
+                                                                 (kept forever)
+
+Retention Rules:
+- Daily:   Keep 7, delete older OR promote to weekly
+- Weekly:  Keep 4, delete older OR promote to monthly  
+- Monthly: Keep 12, delete older OR promote to yearly
+- Yearly:  Keep forever (no deletion)
+
+Promotion Conditions:
+- Daily → Weekly:   Age ≥ 7 days
+- Weekly → Monthly: Age ≥ 28 days (4 weeks)
+- Monthly → Yearly: Age ≥ 365 days (12 months)

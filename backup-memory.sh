@@ -248,7 +248,8 @@ list_backups() {
     info "=== Available Backups ==="
 
     for period in daily weekly monthly yearly; do
-        local count=$(ls -1 "${BACKUP_DIR}/${period}/"*.jsonl.gz 2>/dev/null | wc -l || echo 0)
+        local count=$(ls -1 "${BACKUP_DIR}/${period}/"*.jsonl.gz 2>/dev/null | wc -l)
+        count=${count:-0}
         if [[ ${count} -gt 0 ]]; then
             echo ""
             echo -e "${BLUE}${period^} Backups:${NC}"

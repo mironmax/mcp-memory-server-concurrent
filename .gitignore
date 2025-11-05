@@ -8,20 +8,6 @@ data/*
 !data/README.md
 !data/.gitkeep
 
-# Lock files
-*.lock
-
-# Dependencies
-node_modules/
-package-lock.json
-
-# Build output
-dist/
-
-# Logs
-*.log
-npm-debug.log*
-
 # IDE
 .vscode/
 .idea/
@@ -31,8 +17,3 @@ npm-debug.log*
 # OS files
 .DS_Store
 Thumbs.db
-
-# Temporary files
-*.tmp
-*.temp
-.tmp/

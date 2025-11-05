@@ -7,15 +7,8 @@
   "homepage": "https://github.com/maxim/mcp-memory-server",
   "bugs": "https://github.com/maxim/mcp-memory-server/issues",
   "type": "module",
-  "bin": {
-    "mcp-server-memory": "dist/index.js"
-  },
-  "files": [
-    "dist"
-  ],
   "scripts": {
     "build": "tsc && shx chmod +x dist/*.js",
-    "prepare": "npm run build",
     "watch": "tsc --watch"
   },
   "dependencies": {

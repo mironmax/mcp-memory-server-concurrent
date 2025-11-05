@@ -254,6 +254,13 @@ class KnowledgeGraphManager {
   private findShortestPath(from: string, to: string, graph: KnowledgeGraph, maxLen: number): string[] | null {
     if (from === to) return [from];
 
+    // Build degree map for centrality weighting
+    const degree = new Map<string, number>();
+    graph.relations.forEach(r => {
+      degree.set(r.from, (degree.get(r.from) || 0) + 1);
+      degree.set(r.to, (degree.get(r.to) || 0) + 1);
+    });
+
     // Build adjacency list (bidirectional)
     const adj = new Map<string, Set<string>>();
     graph.relations.forEach(r => {
@@ -263,29 +270,34 @@ class KnowledgeGraphManager {
       adj.get(r.to)!.add(r.from);
     });
 
-    const queue: string[] = [from];
-    const visited = new Set([from]);
+    // Dijkstra with centrality-weighted edges: cost = 1 + log(1 + degree)
+    const dist = new Map<string, number>();
     const parent = new Map<string, string>();
-    let depth = 0;
+    const pq: Array<[number, string]> = [[0, from]];
+    dist.set(from, 0);
 
-    while (queue.length > 0 && depth < maxLen) {
-      const levelSize = queue.length;
-      for (let i = 0; i < levelSize; i++) {
-        const curr = queue.shift()!;
-        if (curr === to) {
-          const path: string[] = [];
-          for (let n = to; n; n = parent.get(n)!) path.unshift(n);
-          return path;
-        }
-        adj.get(curr)?.forEach(nb => {
-          if (!visited.has(nb)) {
-            visited.add(nb);
-            parent.set(nb, curr);
-            queue.push(nb);
-          }
-        });
+    while (pq.length > 0) {
+      pq.sort((a, b) => a[0] - b[0]);
+      const [currDist, curr] = pq.shift()!;
+
+      if (curr === to) {
+        const path: string[] = [];
+        for (let n = to; n; n = parent.get(n)!) path.unshift(n);
+        return path.length - 1 <= maxLen ? path : null;
       }
-      depth++;
+
+      if (currDist > (dist.get(curr) || Infinity)) continue;
+
+      adj.get(curr)?.forEach(nb => {
+        const edgeCost = 1 + Math.log(1 + (degree.get(nb) || 0));
+        const newDist = currDist + edgeCost;
+
+        if (newDist < (dist.get(nb) || Infinity)) {
+          dist.set(nb, newDist);
+          parent.set(nb, curr);
+          pq.push([newDist, nb]);
+        }
+      });
     }
     return null;
   }
